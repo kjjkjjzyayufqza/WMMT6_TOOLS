@@ -81,11 +81,17 @@
          Grid.Column="0"
          Grid.Row="4"
          Command="{Binding ViewModel.ExtractAndSplitSelectNTWDCommand, Mode=OneWay}"
-         Content="Extract And Split NTWD(nut)"/>
+         Content="Extract And Split .tex(nut)"/>
         <ui:Button
          Grid.Column="0"
          Grid.Row="5"
+         Command="{Binding ViewModel.ExtractAndSplitSelectNDWDCommand, Mode=OneWay}"
+         Content="Extract And Split .mdl(nud)"/>
+        <ui:Button
+         Grid.Column="0"
+         Grid.Row="6"
          Command="{Binding ViewModel.SelectJsonFileToXMDCommand, Mode=OneWay}"
          Content="Select Json To XMD"/>
+        <CheckBox Content="Compresse" Grid.Row="6" Margin="161,0,0,0"  VerticalAlignment="Center" Grid.ColumnSpan="2" IsChecked="{Binding ViewModel.IsNeedCompresse, Mode=TwoWay}"/>
     </Grid>
 </Page>

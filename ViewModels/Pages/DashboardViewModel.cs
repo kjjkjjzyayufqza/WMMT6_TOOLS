@@ -18,6 +18,9 @@ namespace WMMT6_TOOLS.ViewModels.Pages
         [ObservableProperty]
         private string? outputFilePath = Properties.Settings.Default.LastSelectedFolderPath;
 
+        [ObservableProperty]
+        private bool isNeedCompresse = false;
+
         [RelayCommand]
         private void OnCounterIncrement()
         {
@@ -29,7 +32,6 @@ namespace WMMT6_TOOLS.ViewModels.Pages
             // Configure open file dialog box
             var dialog = new OpenFileDialog();
             dialog.InitialDirectory = System.IO.Path.GetDirectoryName(InputFilePath); // 设置初始目录
-
             // Show open file dialog box
             bool? result = dialog.ShowDialog();
 
@@ -121,7 +123,23 @@ namespace WMMT6_TOOLS.ViewModels.Pages
                 MessageBox.Show("You not set Input File Path");
                 return;
             }
-            ExtractAndSplitSelectNTWD_ToOutPut(InputFilePath, OutputFilePath);
+            ExtractAndSplitSelectNTWDOrNDWD_ToOutPut(InputFilePath, OutputFilePath, "nut");
+        }
+
+        [RelayCommand]
+        private void ExtractAndSplitSelectNDWD()
+        {
+            if (InputFilePath == null)
+            {
+                MessageBox.Show("You not set Input File Path");
+                return;
+            }
+            if (OutputFilePath == null)
+            {
+                MessageBox.Show("You not set Input File Path");
+                return;
+            }
+            ExtractAndSplitSelectNTWDOrNDWD_ToOutPut(InputFilePath, OutputFilePath, "nud");
         }
 
         [RelayCommand]
@@ -132,7 +150,8 @@ namespace WMMT6_TOOLS.ViewModels.Pages
                 MessageBox.Show("You not set Input File Path");
                 return;
             }
-            JsonToXMD(OutputFilePath);
+            System.Diagnostics.Debug.WriteLine($"Error during decompression: {IsNeedCompresse}");
+            JsonToXMD(OutputFilePath, IsNeedCompresse);
         }
 
         private void ExtractCompressedFile(string inputFilePath, string outputDirectory)
@@ -279,7 +298,9 @@ namespace WMMT6_TOOLS.ViewModels.Pages
             return -1;
         }
 
-        public void ExtractAndSplitSelectNTWD_ToOutPut(string inputFilePath, string outputDirectory)
+        //NDWD is nud
+        //NTWD is nut
+        public void ExtractAndSplitSelectNTWDOrNDWD_ToOutPut(string inputFilePath, string outputDirectory, string fileType)
         {
             // 确保输出目录存在
             if (!Directory.Exists(outputDirectory))
@@ -312,14 +333,19 @@ namespace WMMT6_TOOLS.ViewModels.Pages
                 BinaryReader headerInfoReader1 = new BinaryReader(fs);
                 long tempPostion = fs.Position;
                 int fileStaffOffset = headerInfoReader1.ReadInt32();
-
+                int tempPadding = 0; //假如 fileCount * 0x4 不是0结尾的整数，我们就需要这样加上padding
                 if (fileCount == 1)
                 {
                     headerInfoReader1.ReadBytes(0xc);
                 }
                 else
                 {
-                    headerInfoReader1.ReadBytes(0x4 * (fileCount - 1)); // 每次read都会往前
+                    
+                    if ((0x4 * (fileCount)) % 0x10 != 0)
+                    {
+                        tempPadding = 0x10 - ((0x4 * fileCount) % 0x10);
+                    }
+                    headerInfoReader1.ReadBytes(0x4 * (fileCount - 1) + tempPadding); // 每次read都会往前
                 }
                 int fileFileSize = headerInfoReader1.ReadInt32();
 
@@ -328,7 +354,7 @@ namespace WMMT6_TOOLS.ViewModels.Pages
                 byte[] fileData = headerInfoReader1.ReadBytes(fileFileSize);
 
                 fs.Seek(tempPostion, SeekOrigin.Begin);
-                fs.Seek(0x8 * fileCount, SeekOrigin.Current);
+                fs.Seek(0x8 * fileCount + (tempPadding * 2), SeekOrigin.Current); //tempPadding * 2 是因为 第一类是staffoffst，第二类是文件size，所以*2
                 BinaryReader headerInfoReader2 = new BinaryReader(fs);
                 int fileFileIndex = headerInfoReader2.ReadInt32();
 
@@ -360,7 +386,7 @@ namespace WMMT6_TOOLS.ViewModels.Pages
             {
                 // 这里假设你想将 FileData 写入到文件中
                 // 你可以根据需要修改文件名和路径
-                string fileName = Path.Combine(outputDirectory, $"file_{fileData.FileIndex}.nut");
+                string fileName = Path.Combine(outputDirectory, $"file_{fileData.FileIndex}.{fileType}");
 
                 // 写入字节数组到文件
                 File.WriteAllBytes(fileName, fileData.FileData);
@@ -377,21 +403,23 @@ namespace WMMT6_TOOLS.ViewModels.Pages
                 { "NTWD_FileDatas", xmdFileData.NTWD_FileDatas.Select((data,index) => new Dictionary<string, object>
                 {
                     { "FileIndex", data.FileIndex },
-                    { "FileOutPutPatch", $"file_{data.FileIndex}.nut"}
+                    { "FileOutPutPatch", $"file_{data.FileIndex}.{fileType}"}
                 }).ToList() }
             };
             string jsonFileName = Path.Combine(outputDirectory, $"file.json");
             WriteToJsonFile(jsonFileName, jsonObject);
         }
 
-        public static void JsonToXMD(string outputDirectory)
+        public static void JsonToXMD(string outputDirectory, bool? isNeedCompresse)
         {
             var dialog = new OpenFileDialog();
             string filename = "";
+            string jsonFilePath = "";
             bool? result = dialog.ShowDialog();
             if (result == true)
             {
                 filename = dialog.FileName;
+                jsonFilePath = dialog.DefaultDirectory;
             }
             else
             {
@@ -412,18 +440,27 @@ namespace WMMT6_TOOLS.ViewModels.Pages
             byte[] magic = StringToBytes(jsonObject["Magic"]?.ToString());
             byte[] ver1 = StringToBytes(jsonObject["Ver1"]?.ToString());
             int ver2 = (int)(jsonObject["Ver2"] ?? 0);
-            int fileCount = (int)(jsonObject["FileCount"] ?? 0);
+            dynamic fileDatas = jsonObject["NTWD_FileDatas"];
+            int fileCount = fileDatas.Count ?? 0;
 
 
-            // create header info
-            byte[] headerInfoBytes = new byte[fileCount * 0xc]; // each 0xc size
-            if(fileCount == 1)
+            // 判断fileCount * 0x4 % 0x10结尾是否是0，比如0x10，0x20
+            int padding = 0;
+            if ((fileCount * 0x4) % 0x10 != 0)
             {
-                headerInfoBytes = new byte[0x30];
+                padding = 0x10 - ((fileCount * 0x4) % 0x10);
+            }
+            // create header info
+            byte[] headerInfoBytes_StaffOffset = new byte[fileCount * 0x4 + padding];
+            byte[] headerInfoBytes_FileSize = new byte[fileCount * 0x4 + padding];
+            byte[] headerInfoBytes_FileIndex = new byte[fileCount * 0x4 + padding];
+
+            //TODO fileCount == 1
+            if (fileCount == 1)
+            {
             }
             List<byte> bodyDataList = new List<byte>();
             // 读取 NTWD_FileDatas 中的文件并写入输出文件
-            var fileDatas = jsonObject["NTWD_FileDatas"];
             int index = 0;
             if (fileDatas != null)
             {
@@ -434,14 +471,20 @@ namespace WMMT6_TOOLS.ViewModels.Pages
                     if (!string.IsNullOrEmpty(filePath) && File.Exists(filePath))
                     {
                         byte[] fileBytes = File.ReadAllBytes(filePath);
+                        //如果fileBytes不是0结尾，这里也要加上padding
+                        int paddingLength = (0x10 - (fileBytes.Length % 0x10)) % 0x10;
+                        Array.Resize(ref fileBytes, fileBytes.Length + paddingLength);
+
                         bodyDataList.AddRange(fileBytes); // 将文件字节添加到列表中
                         // wirte header info
                         // start offset
-                        WriteInt32(headerInfoBytes, (0x4 * index), 0x10 + (headerInfoBytes.Length) + countSize);
+                        int staffOffset = 0x10 + (headerInfoBytes_StaffOffset.Length) + (headerInfoBytes_FileSize.Length) + (headerInfoBytes_FileIndex.Length) + countSize;
+                        WriteInt32(headerInfoBytes_StaffOffset, (0x4 * index), staffOffset);
                         // each file size
-                        WriteInt32(headerInfoBytes, (0x4 * fileCount + 0x4 * index), fileBytes.Length);
+                        int fileSize = fileBytes.Length;
+                        WriteInt32(headerInfoBytes_FileSize, (0x4 * index), fileSize);
                         // each file index
-                        WriteInt32(headerInfoBytes, (0x8 * fileCount + 0x4 * index), (int)fileData["FileIndex"]);
+                        WriteInt32(headerInfoBytes_FileIndex, (0x4 * index), (int)fileData["FileIndex"]);
                         countSize += fileBytes.Length;
                     }
                     else
@@ -452,7 +495,17 @@ namespace WMMT6_TOOLS.ViewModels.Pages
                 }
             }
 
+            // 把headerInfoBytes_StaffOffset，headerInfoBytes_FileSize，headerInfoBytes_FileIndex 放在headerInfoBytes
+            // Calculate the total length for the new byte array
+            int totalLength = headerInfoBytes_StaffOffset.Length + headerInfoBytes_FileSize.Length + headerInfoBytes_FileIndex.Length;
 
+            // Create the new byte array
+            byte[] headerInfoBytes = new byte[totalLength];
+
+            // Copy the contents of each byte array into the new byte array
+            Buffer.BlockCopy(headerInfoBytes_StaffOffset, 0, headerInfoBytes, 0, headerInfoBytes_StaffOffset.Length);
+            Buffer.BlockCopy(headerInfoBytes_FileSize, 0, headerInfoBytes, headerInfoBytes_StaffOffset.Length, headerInfoBytes_FileSize.Length);
+            Buffer.BlockCopy(headerInfoBytes_FileIndex, 0, headerInfoBytes, headerInfoBytes_StaffOffset.Length + headerInfoBytes_FileSize.Length, headerInfoBytes_FileIndex.Length);
 
             // 将 List<byte> 转换为 byte[]
             byte[] bodyDataBytes = bodyDataList.ToArray();
@@ -481,7 +534,30 @@ namespace WMMT6_TOOLS.ViewModels.Pages
                 fs.Write(bodyDataBytes, 0, bodyDataBytes.Length);
             }
 
-            Console.WriteLine($"Data written to {outputFilePath}");
+            System.Diagnostics.Debug.WriteLine($"Data written to {outputFilePath}");
+
+            //如果需要压缩，并且直接输出压缩好的文件
+            if (isNeedCompresse == true)
+            {
+                // 构造输出文件的完整路径
+                string compresseOutputFilePath = Path.Combine(outputDirectory, Path.GetFileNameWithoutExtension(outputFilePath) + ".gz");
+
+                try
+                {
+                    using (FileStream inputFileStream = new FileStream(outputFilePath, FileMode.Open, FileAccess.Read, FileShare.ReadWrite))
+                    using (FileStream outputFileStream = new FileStream(compresseOutputFilePath, FileMode.Create, FileAccess.Write))
+                    using (GZipStream compressionStream = new GZipStream(outputFileStream, CompressionMode.Compress))
+                    {
+                        inputFileStream.CopyTo(compressionStream);
+                    }
+
+                    System.Diagnostics.Debug.WriteLine($"Compression completed. Output file: {compresseOutputFilePath}");
+                }
+                catch (Exception ex)
+                {
+                    System.Diagnostics.Debug.WriteLine($"Error during compression: {ex.Message}");
+                }
+            }
         }
 
         private static void WriteInt32(byte[] array, int offset, int value)
